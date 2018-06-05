@@ -12,6 +12,13 @@ using System.Threading.Tasks;
 
 namespace Dispatcher
 {
+    class PresetSerialPort
+    {
+        public string PortName { get; set; }
+        public string PortAddress { get; set; }
+        public int Baud { get; set; }
+    }
+
 	class PortPool
 	{
 		//Singleton
@@ -21,7 +28,9 @@ namespace Dispatcher
 		readonly public ReaderWriterLock Lock = new ReaderWriterLock();
 
 		public Dictionary<string, Port> Ports { get; private set; } = new Dictionary<string, Port>();
-		public Dictionary<int, Servo> Servos { get; private set; }  = new Dictionary<int, Servo>();
+		public SortedDictionary<int, Servo> Servos { get; private set; }  = new SortedDictionary<int, Servo>();
+
+        private const string ConfigurationJsonFilename = "SerialPorts.json";
 
 		public PortPool()
 		{
@@ -30,27 +39,32 @@ namespace Dispatcher
 
 		public void Refresh()
 		{
-			//check if any new ports have been connected
-			var currentSystemPorts = SerialPort.GetPortNames();
-			{
-				foreach (var portName in currentSystemPorts)
-				{
-					if (!this.Ports.ContainsKey(portName))
+			//HACK! override found ports and use a list from json
+            using (StreamReader file = new StreamReader(ConfigurationJsonFilename))
+            {
+                var json = file.ReadToEnd();
+                foreach (var p in JsonConvert.DeserializeObject<IEnumerable<PresetSerialPort>>(json)) {
+                    if (!this.Ports.ContainsKey(p.PortAddress))
+                    {
+                        Logger.Log<PortPool>(Logger.Level.Trace, String.Format("Found port : {0} ({1})", p.PortAddress, p.PortName));
+
+                        var port = new Port(p.PortAddress, (BaudRate)p.Baud);
+						port.Name = p.PortName;
+
+                        Logger.Log<PortPool>(Logger.Level.Trace, String.Format("Connected to port : {0} (IsOpen = {1})", p.PortAddress, port.IsOpen));
+
+                        this.Ports.Add(p.PortAddress, port);
+                    } else
 					{
-						Logger.Log<PortPool>(Logger.Level.Trace, String.Format("Found port : {0}", portName));
-
-						var port = new Port(portName, BaudRate.BaudRate_115200);
-						Logger.Log<PortPool>(Logger.Level.Trace, String.Format("Connected to port : {0} (IsOpen = {1})", portName, port.IsOpen));
-
-						this.Ports.Add(portName, port);
+						Logger.Log<PortPool>(Logger.Level.Trace, String.Format("Couldn't find port {0} ({1}) on system.", p.PortAddress, p.PortName));
 					}
-				}
-			}
+                }
+            }
 
 			//check if any ports have become closed
 			{
 				//remove if Dynamixel SDK reports the port is closed, or the system doesn't report that the port exists any more
-				var toRemove = this.Ports.Where(pair => !pair.Value.IsOpen || !currentSystemPorts.Contains(pair.Key))
+				var toRemove = this.Ports.Where(pair => !pair.Value.IsOpen)
 					.Select(pair => pair.Key)
 					.ToList();
 
@@ -65,22 +79,38 @@ namespace Dispatcher
 			//rebuild the list of servos
 			{
 				this.Servos.Clear();
-				foreach (var port in this.Ports.Values)
+				Parallel.ForEach(this.Ports.Values, (port) =>
 				{
 					Logger.Log<PortPool>(Logger.Level.Trace, String.Format("Searching for servos on port {0}", port.Name));
-					port.Refresh();
+					try
+					{
+						port.Refresh();
+					}
+					catch(Exception e)
+					{
+						Logger.Log(Logger.Level.Error
+							, "Failed to find any servos"
+							, String.Format("PortPool : {0} ({1})", port.Name, port.Address));
+						Logger.Log(Logger.Level.Error
+							, e
+							, String.Format("PortPool : {0} ({1})", port.Name, port.Address));
+					}
+				});
 
+				foreach (var port in this.Ports.Values)
+				{
 					var servosFound = new List<int>();
 
 					foreach (var portServo in port.Servos)
 					{
 						if(this.Servos.ContainsKey(portServo.Key))
 						{
-							Logger.Log<PortPool>(Logger.Level.Warning
+							Logger.Log(Logger.Level.Warning
 								, String.Format("2 servo have been found with the same ID ({0}) on ports {1} and {2}"
 									, portServo.Key
 									, portServo.Value.Port.Name
-									, port.Name));
+									, port.Name)
+								, String.Format("PortPool : {0} ({1})", port.Name, port.Address));
 						}
 						else
 						{
@@ -90,7 +120,9 @@ namespace Dispatcher
 					}
 
 					var servosFoundStringList = servosFound.Select(x => x.ToString()).ToList();
-					Logger.Log<PortPool>(Logger.Level.Trace, String.Format("Found servos: {0}", String.Join(", ", servosFoundStringList)));
+					Logger.Log(Logger.Level.Trace
+						, String.Format("Found servos: {0}", String.Join(", ", servosFoundStringList))
+						, String.Format("PortPool : {0} ({1})", port.Name, port.Address));
 				}
 			}
 
@@ -114,10 +146,7 @@ namespace Dispatcher
 			//set the initialisation register values on all Servos
 			foreach (var servo in this.Servos.Values)
 			{
-				foreach (var register in initialiseRegisters.Registers)
-				{
-					servo.Write(register);
-				}
+				servo.WriteRegisters(new Registers(initialiseRegisters.Registers));
 			}
 		}
 

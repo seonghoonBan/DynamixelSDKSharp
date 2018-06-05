@@ -5,16 +5,21 @@
 	"Schedules": [
 		{
 			"Period": 0,
-			"Action": "initDataLogger",
+			"Action": "System/InitDatabase",
 			"OnStart": "true"
 		},
 		{
 			"Period": 0.1,
-			"Action": "checkSafetyConstraints"
+			"Action": "System/CheckSafetyConstraints"
 		},
 		{
-			"Period": 60,
-			"Action": "refresh",
+			"Period": 0,
+			"Action": "System/Refresh",
+			"OnStart": "false"
+		},
+		{
+			"Period": 1,
+			"Action": "Data/Logger",
 			"OnStart": "true"
 		}
 	]
